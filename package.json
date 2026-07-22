@@ -1,0 +1,23 @@
+{
+  "name": "overleaf-sync",
+  "version": "1.0.0",
+  "description": "Push a local LaTeX project to Overleaf via the web/OT API — dependency-driven, no git bridge, no Overleaf subscription feature required.",
+  "license": "MIT",
+  "author": "Emeric Laberge",
+  "type": "commonjs",
+  "bin": { "overleaf-sync": "./sync.js" },
+  "main": "./sync.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node sync.js",
+    "dry-run": "node sync.js --dry-run --purge"
+  },
+  "dependencies": {
+    "socket.io-client": "github:overleaf/socket.io-client#0.9.17-overleaf-5"
+  },
+  "keywords": ["overleaf", "latex", "sync", "upload", "cli", "self-hosted", "sharelatex"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EmericLaberge/overleaf-sync.git"
+  }
+}
