@@ -182,7 +182,7 @@ function collectDeps(rootsAbs) {
     for (const m of code.matchAll(/\\bibliography\s*\{([^}]+)\}/g))
       for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean))
         push(firstExists([base, fromDir, CFG.paper].map(d => path.join(d, n + '.bib'))));
-    for (const m of code.matchAll(/\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g))
+    for (const m of code.matchAll(/\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g))
       for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean))
         push(firstExists([base, fromDir, CFG.paper].map(d => path.join(d, n + '.sty'))));
   }
