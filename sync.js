@@ -39,6 +39,7 @@ loadDotenv([path.join(process.cwd(), '.env')]);
 const args = process.argv.slice(2);
 const flag = (k) => args.includes('--' + k) || args.includes('-' + k.charAt(0));
 const argVal = (k) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : undefined; };
+const argVals = (k) => { const out = []; for (let i = 0; i < args.length; i++) if (args[i] === '--' + k) out.push(args[i + 1]); return out; };
 
 // paper dir resolves first (needed to locate the project config file)
 const PAPER = argVal('paper') || process.env.OVERLEAF_PAPER || process.cwd();
@@ -106,16 +107,19 @@ const CFG = {
   purge: flag('purge') || FILE_CFG.purge === true,
   yes: flag('yes') || FILE_CFG.yes === true,
 };
-// root: explicit, else auto-detect main.tex in --paper.
-{ const r = cfg('root', 'OVERLEAF_ROOT', null);
-  CFG.root = r ? (path.isAbsolute(r) ? r : path.join(CFG.paper, r))
-              : ['main.tex', 'main_prelim.tex'].map(f => path.join(CFG.paper, f)).find(f => fs.existsSync(f)); }
+// roots: repeatable --root; single root uploads as /main.tex, multiple roots
+// keep their repo-relative paths (so cross-doc xr like ../supplementary/x works).
+let ROOTS = argVals('root');
+if (!ROOTS.length) { const r = cfg('root', 'OVERLEAF_ROOT', null); if (r) ROOTS = [r]; }
+if (!ROOTS.length) ROOTS = ['main.tex', 'main_prelim.tex'].filter(f => fs.existsSync(path.join(CFG.paper, f)));
+ROOTS = ROOTS.map(r => path.isAbsolute(r) ? r : path.resolve(CFG.paper, r));
+const MULTI_ROOT = ROOTS.length > 1;
 
 // validate
 const die = (m) => { console.error(`error: ${m}\n(see: overleaf-sync --help)`); process.exit(2); };
 if (!CFG.project) die('no project id. Pass --project <id>, set OVERLEAF_PROJECT, or add "project" to overleaf-sync.json.');
-if (!CFG.root) die(`no root .tex found in ${CFG.paper}. Pass --root <file> or add "root" to overleaf-sync.json.`);
-if (!fs.existsSync(CFG.root)) die(`root file not found: ${CFG.root}`);
+if (!ROOTS.length) die(`no root .tex found in ${CFG.paper}. Pass --root <file> (repeatable), set OVERLEAF_ROOT, or add "root" to overleaf-sync.json.`);
+for (const r of ROOTS) if (!fs.existsSync(r)) die(`root file not found: ${r}`);
 // auto cookie name from host
 if (!CFG.cookieName) {
   const h = (() => { try { return new URL(CFG.host).hostname; } catch (e) { return ''; } })();
@@ -154,35 +158,33 @@ function resolveCookie() {
 }
 
 // ---- desired tree: compile-closure of the root .tex ----------------------
-function resolveTexRef(ref, fromDir) {
+// baseDir = the root doc's dir (LaTeX compile cwd): \input{figures/x} from any
+// depth resolves there first, then the inputting file's dir, then --paper.
+function firstExists(cands) { for (const c of cands) { try { if (fs.existsSync(c) && fs.statSync(c).isFile()) return c; } catch (e) {} } return null; }
+function resolveTexRef(ref, fromDir, baseDir) {
   const cleaned = ref.replace(/^\.\//, '');
-  const cands = [path.join(CFG.paper, cleaned), path.join(CFG.paper, cleaned + '.tex'),
-                 path.join(fromDir, cleaned), path.join(fromDir, cleaned + '.tex')];
-  for (const c of cands) { try { if (fs.existsSync(c) && fs.statSync(c).isFile()) return path.resolve(c); } catch (e) {} }
-  return null;
+  return firstExists([baseDir, fromDir, CFG.paper].flatMap(d => [path.join(d, cleaned), path.join(d, cleaned + '.tex')]));
 }
-function collectDeps(rootAbs) {
+function collectDeps(rootsAbs) {
   const want = new Map(); const seen = new Set();
-  const queue = [{ abs: path.resolve(rootAbs), isRoot: true }];
+  const queue = rootsAbs.map(abs => ({ abs: path.resolve(abs), base: path.dirname(path.resolve(abs)), isRoot: true }));
   while (queue.length) {
-    const { abs, isRoot } = queue.shift();
+    const { abs, base, isRoot } = queue.shift();
     if (seen.has(abs)) continue; seen.add(abs);
     const rel = path.relative(CFG.paper, abs);
-    want.set(isRoot ? '/main.tex' : '/' + rel.split(path.sep).join('/'), abs);
+    want.set(isRoot && !MULTI_ROOT ? '/main.tex' : '/' + rel.split(path.sep).join('/'), abs);
     let content = ''; try { content = fs.readFileSync(abs, 'utf8'); } catch (e) { continue; }
     const code = content.replace(/(^|[^\\])%.*/g, '$1'); // strip line comments
     const fromDir = path.dirname(abs);
-    const push = (dep) => { if (dep && !seen.has(dep)) queue.push({ abs: dep, isRoot: false }); };
-    for (const m of code.matchAll(/\\(?:input|include)\s*\{([^}]+)\}/g)) push(resolveTexRef(m[1].trim(), fromDir));
-    for (const m of code.matchAll(/\\input\s+([^\s{}\\%]+)/g)) push(resolveTexRef(m[1].trim(), fromDir));
+    const push = (dep) => { if (dep && !seen.has(dep)) queue.push({ abs: dep, base, isRoot: false }); };
+    for (const m of code.matchAll(/\\(?:input|include)\s*\{([^}]+)\}/g)) push(resolveTexRef(m[1].trim(), fromDir, base));
+    for (const m of code.matchAll(/\\input\s+([^\s{}\\%]+)/g)) push(resolveTexRef(m[1].trim(), fromDir, base));
     for (const m of code.matchAll(/\\bibliography\s*\{([^}]+)\}/g))
-      for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean)) {
-        const dep = path.join(CFG.paper, n + '.bib'); if (fs.existsSync(dep)) push(path.resolve(dep));
-      }
+      for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean))
+        push(firstExists([base, fromDir, CFG.paper].map(d => path.join(d, n + '.bib'))));
     for (const m of code.matchAll(/\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g))
-      for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean)) {
-        const dep = path.join(CFG.paper, n + '.sty'); if (fs.existsSync(dep)) push(path.resolve(dep));
-      }
+      for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean))
+        push(firstExists([base, fromDir, CFG.paper].map(d => path.join(d, n + '.sty'))));
   }
   return want;
 }
@@ -238,9 +240,11 @@ async function setDocContent(sm, docId, newContent) {
 (async () => {
   COOKIE = resolveCookie();
   CSRF = await getCsrf();
-  const desired = collectDeps(CFG.root);
+  const desired = collectDeps(ROOTS);
   console.error(`overleaf-sync: ${CFG.host}  project=${CFG.project}`);
-  console.error(`  root ${path.relative(CFG.paper, CFG.root)} -> /main.tex  |  compile-closure: ${desired.size} files  |  dry-run=${CFG.dryRun} purge=${CFG.purge}`);
+  for (const r of ROOTS)
+    console.error(`  root ${path.relative(CFG.paper, r)} -> ${MULTI_ROOT ? '/' + path.relative(CFG.paper, r).split(path.sep).join('/') : '/main.tex'}`);
+  console.error(`  compile-closure: ${desired.size} files  |  dry-run=${CFG.dryRun} purge=${CFG.purge}`);
 
   const sm = new SocketManager(COOKIE, CFG.project, () => {});
   const conn = await sm.connect();
