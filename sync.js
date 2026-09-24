@@ -182,6 +182,8 @@ function collectDeps(rootsAbs) {
     for (const m of code.matchAll(/\\bibliography\s*\{([^}]+)\}/g))
       for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean))
         push(firstExists([base, fromDir, CFG.paper].map(d => path.join(d, n + '.bib'))));
+    for (const m of code.matchAll(/\\externaldocument\s*(?:\[[^\]]*\])?\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g))
+      push(firstExists([base, fromDir, CFG.paper].map(d => path.join(d, m[1].trim() + '.aux'))));
     for (const m of code.matchAll(/\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g))
       for (const n of m[1].split(',').map(s => s.trim()).filter(Boolean))
         push(firstExists([base, fromDir, CFG.paper].map(d => path.join(d, n + '.sty'))));
@@ -237,7 +239,7 @@ async function setDocContent(sm, docId, newContent) {
 }
 
 // ---- main ----------------------------------------------------------------
-(async () => {
+async function main() {
   COOKIE = resolveCookie();
   CSRF = await getCsrf();
   const desired = collectDeps(ROOTS);
@@ -343,4 +345,6 @@ async function setDocContent(sm, docId, newContent) {
   console.error(`\ndone: ${created} created, ${updated} updated, ${unchanged} unchanged, ${deleted} deleted | verify ok=${ok} mismatch=${mismatches}`);
   vsm.disconnect();
   process.exit(mismatches ? 1 : 0);
-})().catch(e => { console.error('fatal:', e.message || e); process.exit(1); });
+}
+if (require.main === module) main().catch(e => { console.error('fatal:', e.message || e); process.exit(1); });
+module.exports = { collectDeps, ROOTS };
